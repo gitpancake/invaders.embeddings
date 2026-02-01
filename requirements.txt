@@ -25,3 +25,4 @@ click>=8.1.0
 
 # AVIF support
 pillow-avif-plugin>=1.5.0
+opencv-python-headless>=4.8.0

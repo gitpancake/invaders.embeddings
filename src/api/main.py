@@ -31,21 +31,21 @@ INDEX_PATH = DATA_DIR / "flash_index"
 async def lifespan(app: FastAPI):
     """Load models and index on startup."""
     global encoder, index_manager
-    
+
     logger.info("Loading CLIP encoder...")
     encoder = CLIPEncoder()
-    
+
     logger.info(f"Loading FAISS index from {INDEX_PATH}...")
     index_manager = FAISSIndexManager()
-    
+
     if INDEX_PATH.with_suffix(".index").exists():
         index_manager.load(str(INDEX_PATH))
         logger.info(f"Loaded index with {index_manager.size} flashes")
     else:
         logger.warning(f"Index not found at {INDEX_PATH}. Run build_index.py first.")
-    
+
     yield
-    
+
     logger.info("Shutting down...")
 
 
@@ -81,33 +81,39 @@ async def identify_flash(
     file: UploadFile = File(..., description="Image file to identify"),
     top_k: int = Query(default=5, ge=1, le=20, description="Number of matches to return"),
     min_confidence: float = Query(default=0.0, ge=0, le=1, description="Minimum confidence threshold"),
+    preprocess: bool = Query(default=True, description="Apply mosaic detection preprocessing"),
 ):
     """
     Identify which Space Invader flash is in the uploaded image.
-    
+
     Returns the top-k most similar flashes from the reference database.
+    
+    When preprocess=True (default), the image will be analyzed to detect and crop
+    the mosaic region before embedding, which improves accuracy for photos taken
+    in the wild with backgrounds.
     """
     if index_manager is None or index_manager.size == 0:
         raise HTTPException(status_code=503, detail="Index not loaded. Run build_index.py first.")
-    
+
     start_time = time.time()
-    
-    # Read and encode image
+
+    # Read and encode image with optional preprocessing
     try:
         image_bytes = await file.read()
-        embedding = encoder.encode_image_from_bytes(image_bytes)
+        embedding = encoder.encode_image_from_bytes(image_bytes, preprocess=preprocess)
     except Exception as e:
+        logger.exception("Failed to process image")
         raise HTTPException(status_code=400, detail=f"Failed to process image: {str(e)}")
-    
+
     # Search
     matches = index_manager.search(embedding, top_k=top_k)
-    
+
     # Filter by confidence
     if min_confidence > 0:
         matches = [m for m in matches if m["confidence"] >= min_confidence]
-    
+
     processing_time_ms = (time.time() - start_time) * 1000
-    
+
     return IdentifyResponse(
         matches=[FlashMatch(**m) for m in matches],
         processing_time_ms=processing_time_ms,
