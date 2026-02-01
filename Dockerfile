@@ -17,6 +17,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY src/ ./src/
 COPY data/ ./data/
 
+# Pre-download the CLIP model during build (not at runtime)
+RUN python -c "from transformers import CLIPProcessor, CLIPModel; \
+    CLIPProcessor.from_pretrained('openai/clip-vit-large-patch14'); \
+    CLIPModel.from_pretrained('openai/clip-vit-large-patch14')"
+
 # Set environment variables
 ENV PYTHONUNBUFFERED=1
 ENV KMP_DUPLICATE_LIB_OK=TRUE
@@ -24,9 +29,5 @@ ENV KMP_DUPLICATE_LIB_OK=TRUE
 # Expose port
 EXPOSE 8000
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
-    CMD curl -f http://localhost:8000/health || exit 1
-
-# Run the API
-CMD ["uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Run the API (Railway sets $PORT)
+CMD ["sh", "-c", "uvicorn src.api.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
