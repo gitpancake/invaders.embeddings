@@ -15,12 +15,23 @@ jobs:
           host: ${{ secrets.SSH_HOST }}
           username: root
           key: ${{ secrets.SSH_PRIVATE_KEY }}
+          command_timeout: 120s
           script: |
             cd /root/invaders.embeddings
             git pull origin main
             source venv/bin/activate
             pip install -r requirements.txt --quiet
             systemctl restart embeddings
-            sleep 5
-            curl -s http://localhost:8000/health || exit 1
-            echo "Deploy successful!"
+            
+            # Wait for service to be healthy (model takes ~15s to load)
+            for i in {1..12}; do
+              sleep 5
+              if curl -s http://localhost:8000/health | grep -q '"status":"healthy"'; then
+                echo "Deploy successful!"
+                exit 0
+              fi
+              echo "Waiting for service to be ready... ($i/12)"
+            done
+            
+            echo "Service failed to become healthy"
+            exit 1
