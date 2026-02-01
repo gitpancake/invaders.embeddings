@@ -7,10 +7,9 @@ __pycache__/
 venv/
 ENV/
 .venv/
-
-# Data files (too large for git)
-data/*.index
-data/*.npy
+*.egg-info/
+dist/
+build/
 
 # IDE
 .idea/
@@ -26,5 +25,20 @@ Thumbs.db
 *.log
 nohup.out
 
+# Environment (SENSITIVE)
+.env
+.env.*
+!.env.example
+
 # Checkpoints
 checkpoint*.json
+
+# Large numpy files
+*.npy
+
+# Agents directory (local only)
+.agents/
+
+# HuggingFace cache (downloaded at runtime)
+.cache/
+models/
