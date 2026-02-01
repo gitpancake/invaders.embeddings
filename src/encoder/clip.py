@@ -19,29 +19,40 @@ logger = logging.getLogger(__name__)
 class CLIPEncoder:
     """
     CLIP encoder for generating image embeddings.
-    Uses clip-vit-base-patch32 for lower memory usage (~600MB vs 3GB).
+    Uses clip-vit-base-patch32 with float16 for lower memory usage (~300MB vs 600MB).
     """
 
     MODEL_NAME = "openai/clip-vit-base-patch32"
     EMBEDDING_DIM = 512  # base model uses 512-dim embeddings
 
-    def __init__(self, device: str = None):
+    def __init__(self, device: str = None, use_fp16: bool = True):
         """
         Initialize the CLIP encoder.
 
         Args:
             device: Device to use ('mps' for M1, 'cuda' for NVIDIA, 'cpu' for CPU).
                    If None, auto-detects the best available device.
+            use_fp16: Use half precision to reduce memory (default True)
         """
         if device is None:
             device = self._get_best_device()
 
         self.device = device
-        logger.info(f"Initializing CLIP encoder on device: {device}")
+        self.use_fp16 = use_fp16 and device != "mps"  # MPS doesn't fully support fp16
+        
+        logger.info(f"Initializing CLIP encoder on device: {device}, fp16: {self.use_fp16}")
 
         # Load model and processor
         self.processor = CLIPProcessor.from_pretrained(self.MODEL_NAME)
-        self.model = CLIPModel.from_pretrained(self.MODEL_NAME).to(self.device)
+        
+        if self.use_fp16:
+            self.model = CLIPModel.from_pretrained(
+                self.MODEL_NAME, 
+                torch_dtype=torch.float16
+            ).to(self.device)
+        else:
+            self.model = CLIPModel.from_pretrained(self.MODEL_NAME).to(self.device)
+        
         self.model.eval()
 
         logger.info(f"CLIP model loaded: {self.MODEL_NAME}")
@@ -94,6 +105,10 @@ class CLIPEncoder:
             # Process batch
             inputs = self.processor(images=batch, return_tensors="pt", padding=True)
             inputs = {k: v.to(self.device) for k, v in inputs.items()}
+            
+            # Convert to fp16 if enabled
+            if self.use_fp16 and "pixel_values" in inputs:
+                inputs["pixel_values"] = inputs["pixel_values"].half()
 
             with torch.no_grad():
                 # Get image features - returns a tensor directly
@@ -110,7 +125,8 @@ class CLIPEncoder:
                 # L2 normalize for cosine similarity
                 image_features = image_features / image_features.norm(dim=-1, keepdim=True)
 
-            all_embeddings.append(image_features.cpu().numpy())
+            # Convert back to float32 for numpy
+            all_embeddings.append(image_features.float().cpu().numpy())
 
         return np.vstack(all_embeddings)
 
