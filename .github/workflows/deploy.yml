@@ -1,0 +1,26 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to server
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: root
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
+            cd /root/invaders.embeddings
+            git pull origin main
+            source venv/bin/activate
+            pip install -r requirements.txt --quiet
+            systemctl restart embeddings
+            sleep 5
+            curl -s http://localhost:8000/health || exit 1
+            echo "Deploy successful!"
