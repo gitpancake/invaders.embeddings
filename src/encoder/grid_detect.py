@@ -75,10 +75,9 @@ def compute_grid_score(edges: np.ndarray, tile_size: int) -> float:
     row_score = periodicity_score(row_sums, tile_size)
     col_score = periodicity_score(col_sums, tile_size)
 
-    # Edge density factor - mosaics have clear edges between tiles
+    # Edge density factor
     edge_density = np.sum(edges > 0) / edges.size
     
-    # Prefer moderate edge density (0.05-0.20) - too low = no structure, too high = noise
     density_factor = 1.0
     if edge_density < 0.03:
         density_factor = edge_density / 0.03
@@ -89,38 +88,27 @@ def compute_grid_score(edges: np.ndarray, tile_size: int) -> float:
 
 
 def detect_mosaic_by_grid(image: Image.Image, 
-                          min_window_ratio: float = 0.12,
-                          max_window_ratio: float = 0.45) -> Tuple[Optional[Tuple[int, int, int, int]], int]:
+                          min_window_ratio: float = 0.08,
+                          max_window_ratio: float = 0.35) -> Tuple[Optional[Tuple[int, int, int, int]], int]:
     """
     Detect mosaic region by finding areas with strong grid patterns.
-
-    Args:
-        image: PIL Image
-        min_window_ratio: Minimum window size as ratio of image (default 12%)
-        max_window_ratio: Maximum window size as ratio of image (default 45%)
-
-    Returns:
-        (x, y, width, height) of detected region, or None
-        tile_size estimate
     """
     arr = np.array(image.convert('RGB'))
     gray = cv2.cvtColor(arr, cv2.COLOR_RGB2GRAY)
     h, w = gray.shape
     min_dim = min(w, h)
-    cx, cy = w // 2, h // 2  # Image center
+    cx, cy = w // 2, h // 2
 
-    # Edge detection
     edges = cv2.Canny(gray, 50, 150)
 
-    # Estimate tile size from center region (most likely to contain mosaic)
+    # Estimate tile size from center region
     center_size = min_dim // 2
     center_edges = edges[cy-center_size//2:cy+center_size//2,
                          cx-center_size//2:cx+center_size//2]
     tile_size, _ = estimate_tile_size(center_edges)
     
-    # Also try from multiple regions and take consensus
     tile_estimates = [tile_size]
-    for ratio in [0.3, 0.5]:
+    for ratio in [0.25, 0.4]:
         size = int(min_dim * ratio)
         for offset_y in [-size//2, 0, size//2]:
             for offset_x in [-size//2, 0, size//2]:
@@ -134,50 +122,53 @@ def detect_mosaic_by_grid(image: Image.Image,
                     if conf > 0.15:
                         tile_estimates.append(ts)
     
-    # Use median of estimates
     tile_size = int(np.median(tile_estimates))
     tile_size = max(8, min(40, tile_size))
     
     logger.info(f'Estimated tile size: {tile_size} pixels')
 
-    # Sliding window search
     best_score = 0
     best_region = None
 
-    min_window = max(int(min_dim * min_window_ratio), tile_size * 5)
+    min_window = max(int(min_dim * min_window_ratio), tile_size * 4)
     max_window = int(min_dim * max_window_ratio)
     
-    # Generate window sizes
     window_sizes = []
     current = min_window
     while current <= max_window:
         rounded = (current // tile_size) * tile_size
-        if rounded >= tile_size * 5 and rounded not in window_sizes:
+        if rounded >= tile_size * 4 and rounded not in window_sizes:
             window_sizes.append(rounded)
         current = int(current * 1.2)
+    
+    # Exclude top/bottom 10% of image (often sky/ground with false patterns)
+    margin_y = int(h * 0.10)
+    search_y_start = margin_y
+    search_y_end = h - margin_y
     
     for window_size in window_sizes:
         step = max(tile_size // 2, window_size // 10)
 
-        for y in range(0, h - window_size + 1, step):
+        for y in range(search_y_start, search_y_end - window_size + 1, step):
             for x in range(0, w - window_size + 1, step):
                 window_edges = edges[y:y+window_size, x:x+window_size]
 
-                # Compute base grid score
                 score = compute_grid_score(window_edges, tile_size)
                 
-                if score < 0.1:  # Skip very low scores
+                if score < 0.1:
                     continue
                 
-                # Distance from center penalty (prefer central regions)
-                window_cx = x + window_size // 2
+                # Center preference (both horizontal and vertical)
                 window_cy = y + window_size // 2
-                dist_from_center = np.sqrt((window_cx - cx)**2 + (window_cy - cy)**2)
-                max_dist = np.sqrt(cx**2 + cy**2)
-                center_factor = 1.0 - 0.3 * (dist_from_center / max_dist)
+                window_cx = x + window_size // 2
                 
-                # Slight preference for smaller windows (more precise)
-                size_factor = 1.0 - 0.15 * (window_size - min_window) / (max_window - min_window + 1)
+                vert_dist = abs(window_cy - cy) / cy
+                horiz_dist = abs(window_cx - cx) / cx
+                
+                center_factor = 1.0 - 0.25 * (vert_dist + horiz_dist) / 2
+                
+                # Prefer smaller windows
+                size_factor = 1.0 - 0.1 * (window_size - min_window) / (max_window - min_window + 1)
                 
                 adjusted_score = score * center_factor * size_factor
 
@@ -188,7 +179,6 @@ def detect_mosaic_by_grid(image: Image.Image,
     if best_region is None:
         return None, tile_size
 
-    # Refine the region bounds
     x, y, rw, rh = best_region
     refined = refine_grid_bounds(edges, x, y, rw, rh, tile_size)
     if refined:
@@ -240,8 +230,8 @@ def refine_grid_bounds(edges: np.ndarray, x: int, y: int, w: int, h: int,
 
 
 def preprocess_with_grid_detection(image: Image.Image, 
-                                   min_window_ratio: float = 0.12,
-                                   max_window_ratio: float = 0.45) -> Image.Image:
+                                   min_window_ratio: float = 0.08,
+                                   max_window_ratio: float = 0.35) -> Image.Image:
     """
     Main preprocessing function using grid detection.
     """
@@ -255,7 +245,7 @@ def preprocess_with_grid_detection(image: Image.Image,
     else:
         logger.info('Grid detection failed, using center crop')
         w, h = image.size
-        crop_size = int(min(w, h) * 0.4)
+        crop_size = int(min(w, h) * 0.3)
         left = (w - crop_size) // 2
         top = (h - crop_size) // 2
         return image.crop((left, top, left + crop_size, top + crop_size))
