@@ -10,16 +10,14 @@ logger = logging.getLogger(__name__)
 def preprocess_flash_image(image: Image.Image, target_size: int = 224) -> Image.Image:
     """
     Preprocess a flash photo to extract and enhance the mosaic region.
-    
-    This attempts to:
-    1. Detect the mosaic region in the image
-    2. Crop to that region
-    3. Return the cropped image for embedding
-    
+
+    Uses grid pattern detection to find Space Invader mosaics, which have
+    characteristic regular tile patterns.
+
     Args:
         image: Input PIL Image
         target_size: Target size for the output image
-        
+
     Returns:
         Preprocessed PIL Image focused on the mosaic
     """
@@ -27,20 +25,28 @@ def preprocess_flash_image(image: Image.Image, target_size: int = 224) -> Image.
         # Convert to RGB if needed
         if image.mode != "RGB":
             image = image.convert("RGB")
-        
-        # Try to detect and crop the mosaic region
+
+        # Try grid-based detection first (better for regular tile patterns)
+        try:
+            from .grid_detect import detect_mosaic_by_grid, preprocess_with_grid_detection
+            return preprocess_with_grid_detection(image)
+        except Exception as e:
+            logger.warning(f"Grid detection failed: {e}, falling back to edge-based detection")
+
+        # Fallback to edge/saturation based detection
         cropped = detect_and_crop_mosaic(image)
-        
+
         if cropped is not None:
             logger.info(f"Detected mosaic region, cropped from {image.size} to {cropped.size}")
             return cropped
         else:
             logger.info("Could not detect mosaic, using center crop")
             return center_crop(image)
-            
+
     except Exception as e:
         logger.warning(f"Preprocessing failed: {e}, returning original")
         return image
+
 
 
 def detect_and_crop_mosaic(image: Image.Image, min_size_ratio: float = 0.2) -> Image.Image:
