@@ -5,9 +5,10 @@ A Python service for identifying Space Invader street art flashes from images us
 ## Overview
 
 This service:
-1. Uses CLIP (ViT-L/14) to generate 768-dimensional embeddings from images
-2. Stores reference flash embeddings in a FAISS index for fast similarity search
-3. Provides a FastAPI endpoint to identify flashes from query images
+1. Preprocesses user photos to detect and extract the mosaic region (grid detection)
+2. Uses CLIP (ViT-L/14) to generate 768-dimensional embeddings from images
+3. Stores reference flash embeddings in a FAISS index for fast similarity search
+4. Provides a FastAPI endpoint to identify flashes from query images
 
 ## Setup
 
@@ -56,9 +57,7 @@ The API will be available at http://localhost:8000
 Identify a flash from an uploaded image.
 
 ```bash
-curl -X POST "http://localhost:8000/identify" \
-  -F "file=@path/to/image.jpg" \
-  -F "top_k=5"
+curl -X POST "http://localhost:8000/identify"   -F "file=@path/to/image.jpg"   -F "top_k=5"
 ```
 
 Response:
@@ -86,6 +85,48 @@ Check service health.
 curl http://localhost:8000/health
 ```
 
+## Image Preprocessing
+
+User-submitted photos undergo grid detection to extract the mosaic region:
+
+1. **Edge Detection**: Canny edge detection finds structural lines
+2. **Autocorrelation**: Detects repeating grid patterns characteristic of mosaics
+3. **Region Scoring**: Scores candidate regions by grid strength
+4. **Margin Exclusion**: Excludes top 20% (sky/graffiti) and bottom 10% (ground)
+5. **Crop Extraction**: Extracts the best mosaic region for embedding
+
+This preprocessing significantly improves identification accuracy for real-world photos where the mosaic may be partially visible among other elements.
+
+## Deployment
+
+### Railway
+
+The service is configured for Railway deployment:
+
+```bash
+# railway.json configures the build and start commands
+railway up
+```
+
+**Environment Variables:**
+- `PORT` - Set automatically by Railway
+- `HF_HOME` - HuggingFace model cache directory
+
+**Notes:**
+- The FAISS index and metadata are bundled in the Docker image
+- First request may be slow (~10-30s) as the CLIP model loads
+- Subsequent requests are fast (~150-200ms)
+
+### Docker
+
+```bash
+# Build the image
+docker build -t invaders-embeddings .
+
+# Run locally
+docker run -p 8000:8000 invaders-embeddings
+```
+
 ## Performance
 
 On M1 MacBook Pro:
@@ -93,13 +134,19 @@ On M1 MacBook Pro:
 - Single image identification: ~150-200ms
 - FAISS search: <1ms
 
+On Railway (shared CPU):
+- Cold start: ~10-30 seconds (model loading)
+- Warm request: ~200-400ms
+
 ## Project Structure
 
 ```
 invaders.embeddings/
 ├── src/
 │   ├── encoder/
-│   │   └── clip.py          # CLIP model wrapper
+│   │   ├── clip.py          # CLIP model wrapper
+│   │   ├── grid_detect.py   # Mosaic region detection
+│   │   └── preprocess.py    # Image preprocessing
 │   ├── index/
 │   │   └── faiss_manager.py # FAISS index management
 │   ├── api/
@@ -110,9 +157,21 @@ invaders.embeddings/
 ├── data/
 │   ├── flash_index.index    # FAISS index (generated)
 │   └── flash_index.meta.json # Metadata (generated)
+├── Dockerfile               # Container build
+├── railway.json             # Railway deployment config
 ├── requirements.txt
 └── README.md
 ```
+
+## Integration
+
+This service is called by `invaders.consumer` after IPFS upload:
+
+```
+User Flash -> Consumer -> IPFS Upload -> Embeddings API -> Database
+```
+
+Identifications with >= 80% similarity are stored in the `flash_identifications` table for review.
 
 ## References
 
