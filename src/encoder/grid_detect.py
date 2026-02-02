@@ -87,79 +87,6 @@ def compute_grid_score(edges: np.ndarray, tile_size: int) -> float:
     return (row_score + col_score) / 2 * (1 + density_factor)
 
 
-def compute_rectangularity_score(edges: np.ndarray) -> float:
-    """
-    Compute how rectangular/grid-like the edges are.
-    Mosaics have mostly horizontal and vertical lines.
-    Graffiti has many diagonal/curved lines.
-    Returns a score 0-1 where 1 = highly rectangular.
-    """
-    if edges.size == 0 or edges.max() == 0:
-        return 0.0
-    
-    # Use Hough line detection to find line angles
-    lines = cv2.HoughLinesP(edges, 1, np.pi/180, threshold=20, 
-                            minLineLength=10, maxLineGap=5)
-    
-    if lines is None or len(lines) < 3:
-        return 0.5  # Not enough lines to judge
-    
-    # Count horizontal, vertical, and diagonal lines
-    horiz_count = 0
-    vert_count = 0
-    diag_count = 0
-    
-    for line in lines:
-        x1, y1, x2, y2 = line[0]
-        if x2 - x1 == 0:
-            angle = 90
-        else:
-            angle = abs(np.degrees(np.arctan((y2 - y1) / (x2 - x1))))
-        
-        # Horizontal: 0-15 degrees, Vertical: 75-90 degrees, Diagonal: 15-75 degrees
-        if angle < 15:
-            horiz_count += 1
-        elif angle > 75:
-            vert_count += 1
-        else:
-            diag_count += 1
-    
-    total = horiz_count + vert_count + diag_count
-    if total == 0:
-        return 0.5
-    
-    # High rectangularity = mostly horizontal + vertical, few diagonals
-    rect_ratio = (horiz_count + vert_count) / total
-    return rect_ratio
-
-
-def compute_color_variance(image_region: np.ndarray) -> float:
-    """
-    Compute color variance in a region.
-    Mosaics typically have distinct, saturated colors.
-    Returns a score where higher = more colorful.
-    """
-    if image_region.size == 0:
-        return 0.0
-    
-    # Convert to HSV
-    hsv = cv2.cvtColor(image_region, cv2.COLOR_RGB2HSV)
-    
-    # Saturation channel - mosaics tend to have higher saturation
-    saturation = hsv[:, :, 1]
-    mean_sat = np.mean(saturation)
-    
-    # Value channel variance - mosaics have distinct tile colors
-    value = hsv[:, :, 2]
-    value_std = np.std(value)
-    
-    # Combine: prefer moderate-high saturation and some value variance
-    sat_score = min(mean_sat / 100, 1.0)
-    var_score = min(value_std / 50, 1.0)
-    
-    return (sat_score + var_score) / 2
-
-
 def detect_mosaic_by_grid(image: Image.Image, 
                           min_window_ratio: float = 0.08,
                           max_window_ratio: float = 0.35) -> Tuple[Optional[Tuple[int, int, int, int]], int]:
@@ -214,10 +141,11 @@ def detect_mosaic_by_grid(image: Image.Image,
             window_sizes.append(rounded)
         current = int(current * 1.2)
     
-    # Exclude top/bottom 10% of image (often sky/ground with false patterns)
-    margin_y = int(h * 0.10)
-    search_y_start = margin_y
-    search_y_end = h - margin_y
+    # Exclude top 20% (sky/graffiti) and bottom 10% (ground)
+    top_margin = int(h * 0.20)
+    bottom_margin = int(h * 0.10)
+    search_y_start = top_margin
+    search_y_end = h - bottom_margin
     
     for window_size in window_sizes:
         step = max(tile_size // 2, window_size // 10)
@@ -230,13 +158,6 @@ def detect_mosaic_by_grid(image: Image.Image,
                 
                 if score < 0.1:
                     continue
-
-                # Rectangularity score - penalize graffiti/curved patterns
-                rect_score = compute_rectangularity_score(window_edges)
-
-                # Color score - prefer colorful regions
-                window_rgb = arr[y:y+window_size, x:x+window_size]
-                color_score = compute_color_variance(window_rgb)
                 
                 # Center preference (both horizontal and vertical)
                 window_cy = y + window_size // 2
@@ -245,23 +166,12 @@ def detect_mosaic_by_grid(image: Image.Image,
                 vert_dist = abs(window_cy - cy) / cy
                 horiz_dist = abs(window_cx - cx) / cx
                 
-                # Strong center preference - mosaic is usually near image center
-                center_factor = 1.0 - 1.0 * (vert_dist + horiz_dist) / 2
+                center_factor = 1.0 - 0.25 * (vert_dist + horiz_dist) / 2
                 
                 # Prefer smaller windows
                 size_factor = 1.0 - 0.1 * (window_size - min_window) / (max_window - min_window + 1)
                 
-                # Rectangularity factor: only penalize very low rectangularity (likely graffiti)
-                # rect >= 0.7: no penalty, 0.5-0.7: mild penalty, < 0.5: strong penalty
-                if rect_score >= 0.7:
-                    rect_factor = 1.0
-                elif rect_score >= 0.5:
-                    rect_factor = 0.7 + (rect_score - 0.5) * 1.5  # 0.7 to 1.0
-                else:
-                    rect_factor = rect_score * 1.4  # 0 to 0.7
-
-                # Combined score - increased center preference weight
-                adjusted_score = score * rect_factor * (0.8 + 0.2 * color_score) * center_factor * size_factor
+                adjusted_score = score * center_factor * size_factor
 
                 if adjusted_score > best_score:
                     best_score = adjusted_score
